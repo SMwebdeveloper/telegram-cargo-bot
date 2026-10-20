@@ -1,0 +1,28 @@
+# Node dependencies
+node_modules/
+
+# Environment variables & secrets (do NOT commit!)
+.env
+.env.*
+!.env.example
+
+# Runtime data & Telegram credentials (do NOT commit!)
+data/session.txt
+data/*.txt
+data/db.json
+!data/.gitkeep
+
+# Logs and runtime files
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# System & IDE files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
