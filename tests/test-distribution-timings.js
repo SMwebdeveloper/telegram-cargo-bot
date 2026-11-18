@@ -6,21 +6,20 @@ console.log("🧪 Testing Distribution Timings & Step Rules:\n");
 // 1. Konfiguratsiya parametrlarini tekshirish
 console.log("Konfiguratsiya qiymatlari:");
 console.log(`- Guruhlar orasidagi kutish: ${config.GROUP_DELAY_MS} ms (${config.GROUP_DELAY_MS / 1000} soniya)`);
-console.log(`- Tanaffus guruhi chegarasi: har ${config.BATCH_PAUSE_GROUPS_COUNT} ta guruhda`);
-console.log(`- Tanaffus davomiyligi: ${config.BATCH_PAUSE_MS} ms (${config.BATCH_PAUSE_MS / (1000 * 60)} daqiqa)`);
-console.log(`- Sikllar orasidagi kutish: ${config.CYCLE_DELAY_MS} ms (${config.CYCLE_DELAY_MS / (1000 * 60)} daqiqa)`);
+console.log(`- Tanaffus guruhi chegarasi: har ${config.BATCH_PAUSE_GROUPS_COUNT} ta guruhda dam olish`);
+console.log(`- Tanaffus davomiyligi: ${config.BATCH_PAUSE_MIN_MS / 60000}-${config.BATCH_PAUSE_MAX_MS / 60000} daqiqa`);
+console.log(`- Bitta to'plamdagi tanlangan guruhlar: ${config.MAX_BATCH_GROUPS} ta`);
 console.log(`- Jami sikllar limiti: ${config.MAX_SENT_COUNT} ta sikl`);
 
-assert.strictEqual(config.GROUP_DELAY_MS, 50000, "Guruhlar orasida 50 soniya (50,000 ms) bo'lishi kerak");
-assert.strictEqual(config.BATCH_PAUSE_GROUPS_COUNT, 20, "Har 20 ta guruhda tanaffus bo'lishi kerak");
-assert.strictEqual(config.BATCH_PAUSE_MS, 300000, "Tanaffus 5 daqiqa (300,000 ms) bo'lishi kerak");
-assert.strictEqual(config.CYCLE_DELAY_MS, 1200000, "Sikllar orasida 20 daqiqa (1,200,000 ms) bo'lishi kerak");
-assert.strictEqual(config.MAX_SENT_COUNT, 10, "Maksimal sikllar soni 10 ta bo'lishi kerak");
+assert.strictEqual(config.GROUP_DELAY_MS, 50000, "Guruhlar orasida 50 soniya bo'lishi kerak");
+assert.strictEqual(config.BATCH_PAUSE_GROUPS_COUNT, 5, "Har 5 ta guruhda dam olish bo'lishi kerak");
+assert.strictEqual(config.MAX_BATCH_GROUPS, 15, "To'plam faqat 15 ta tanlangan guruhga yuborilishi kerak");
+assert.strictEqual(config.MAX_SENT_COUNT, 5, "Maksimal sikllar soni 5 ta bo'lishi kerak");
 
-console.log("\n✅ Barcha vaqt konstantalari talabga to'liq mos keladi!");
+console.log("\n✅ Barcha vaqt va guruh konstantalari talablarga to'liq mos keladi!");
 
-// 2. 50 ta guruhlik bitta sikl qadamlarini simulyatsiya qilish
-const totalGroups = 50;
+// 2. 15 ta tanlangan guruhlik 1 ta to'liq sikl qadamlarini simulyatsiya qilish
+const totalGroups = 15;
 let events = [];
 
 for (let i = 0; i < totalGroups; i++) {
@@ -28,26 +27,26 @@ for (let i = 0; i < totalGroups; i++) {
 
   if (i < totalGroups - 1) {
     if ((i + 1) % config.BATCH_PAUSE_GROUPS_COUNT === 0) {
-      events.push({ action: "pause_5_min", afterGroup: i + 1 });
+      events.push({ action: "pause_3_4_min", afterGroup: i + 1 });
     } else {
-      events.push({ action: "wait_50_sec", afterGroup: i + 1 });
+      events.push({ action: "wait_group_delay", afterGroup: i + 1 });
     }
   }
 }
-events.push({ action: "cycle_finished_wait_20_min" });
+events.push({ action: "cycle_1_completed" });
 
 // Tahlil
-const pause5minCount = events.filter((e) => e.action === "pause_5_min").length;
-const wait50secCount = events.filter((e) => e.action === "wait_50_sec").length;
+const pauseCount = events.filter((e) => e.action === "pause_3_4_min").length;
+const waitCount = events.filter((e) => e.action === "wait_group_delay").length;
 const sendsCount = events.filter((e) => e.action === "send").length;
 
-console.log(`\nSimulyatsiya natijasi (50 ta guruh uchun):`);
+console.log(`\nSimulyatsiya natijasi (15 ta tanlangan guruh uchun):`);
 console.log(`- Jami yuborildi: ${sendsCount} ta guruhga`);
-console.log(`- 50 soniyalik kutishlar: ${wait50secCount} marta`);
-console.log(`- 5 daqiqalik tanaffuslar: ${pause5minCount} marta (20 va 40-guruhlardan keyin)`);
+console.log(`- Guruhlar orasidagi kutishlar: ${waitCount} marta`);
+console.log(`- 3-4 daqiqalik dam olishlar: ${pauseCount} marta (5 va 10-guruhlardan keyin)`);
 
-assert.strictEqual(sendsCount, 50, "50 ta guruhga yuborilishi kerak");
-assert.strictEqual(pause5minCount, 2, "20 va 40-guruhlardan keyin 2 ta 5 daqiqalik tanaffus bo'lishi kerak");
-assert.strictEqual(wait50secCount, 47, "Qolgan oraliqlarda 47 ta 50 soniyalik kutish bo'lishi kerak (49 ta oraliqdan 2 tasi 5 daqiqa)");
+assert.strictEqual(sendsCount, 15, "Faqat 15 ta guruhga yuborilishi kerak");
+assert.strictEqual(pauseCount, 2, "5 va 10-guruhlardan keyin 2 ta 3-4 daqiqalik dam olish bo'lishi kerak");
+assert.strictEqual(waitCount, 12, "Qolgan oraliqlarda 12 ta kutish bo'lishi kerak (14 oraliqdan 2 tasi dam olish)");
 
-console.log("✅ 50 ta guruhlik sikl qadamlari 100% to'g'ri ishladi!");
+console.log("✅ 15 ta guruhlik 1 ta to'liq sikl qadamlari 100% to'g'ri ishladi!");

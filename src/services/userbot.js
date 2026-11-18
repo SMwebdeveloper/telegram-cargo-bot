@@ -146,8 +146,13 @@ class UserbotService {
             `🔹 \`.run\` — Guruhlarga e'lonlarni tarqatishni boshlash\n` +
             `🔹 \`.stop\` — Tarqatishni to'xtatish\n` +
             `🔹 \`.list\` — Faol e'lonlar ro'yxati\n` +
+            `🔹 \`.batches\` — To'plamlar va ularga biriktirilgan guruhlar\n` +
             `🔹 \`.groups\` — Profilingizdagi guruhlar ro'yxati\n` +
             `🔹 \`.stats\` — Statistika va sikllar soni\n\n` +
+            `🔹 **To'plamga guruhlarni biriktirish:**\n` +
+            `• Barchasini: \`.setgroups <batch_id> all\`\n` +
+            `• Tanlanganlarini: \`.setgroups <batch_id> 1,2,5\`\n` +
+            `• Tozalash: \`.setgroups <batch_id> clear\`\n\n` +
             `🔹 **Yangi e'lon qo'shish formati:**\n` +
             `\`.add Shymkent | Sirdaryo | 198 km | shkura | 22t/86m3 | 2 tenta | Gruz gotov | Avans bor | Nal | @username\`\n\n` +
             `🔹 **E'lonni tahrirlash:**\n` +
@@ -169,7 +174,7 @@ class UserbotService {
           } else {
             scheduler.start();
             await this.client.sendMessage("me", {
-              message: `🚀 Tarqatish jarayoni boshlandi! Har bir to'liq sikl barcha guruhlarga yuborilgach 1 sikl hisoblanadi (Max 10 sikl).`,
+              message: `🚀 Tarqatish jarayoni boshlandi! Har bir to'liq sikl belgilangan barcha guruhlarga yuborilgach 1 sikl hisoblanadi (Max ${config.MAX_SENT_COUNT} sikl).`,
             });
           }
         } else if (
@@ -183,17 +188,116 @@ class UserbotService {
             message: `⏹ Tarqatish dvigateli to'xtatildi.`,
           });
         } else if (
+          lowerText === ".batches" ||
+          lowerText === "/batches" ||
+          lowerText === "batches" ||
+          lowerText === "toplamlar"
+        ) {
+          const batches = db.getAllBatches();
+          if (batches.length === 0) {
+            await this.client.sendMessage("me", {
+              message: `📦 Hozircha to'plamlar yaratilmagan.`,
+            });
+          } else {
+            let bText = `📦 **E'LONLAR TO'PLAMLARI RO'YXATI:**\n\n`;
+            batches.forEach((b, i) => {
+              const grpCount = (b.target_group_ids || []).length;
+              bText += `━━━━━━━━━━━━━━━━━━━━\n`;
+              bText += `📦 **${i + 1}. ${b.title}**\n`;
+              bText += `🆔 \`${b.id}\`\n`;
+              bText += `📌 Holati: ${b.status === "faol" ? "🟢 FAOL" : "🔴 NOFAOL"}\n`;
+              bText += `🔄 Sikllar: ${b.completed_cycles || 0}/${config.MAX_SENT_COUNT} ta\n`;
+              bText += `👥 Tanlangan guruhlar: **${grpCount}/${config.MAX_BATCH_GROUPS}** ta\n`;
+              bText += `📋 E'lonlar soni: ${(b.cargo_ids || []).length} ta\n`;
+            });
+            bText += `\n💡 Guruhlarni biriktirish uchun: \`.setgroups <batch_id> all\` yoki \`.setgroups <batch_id> 1,2,3\``;
+            await this.client.sendMessage("me", { message: bText });
+          }
+        } else if (
+          lowerText.startsWith(".setgroups") ||
+          lowerText.startsWith("/setgroups") ||
+          lowerText.startsWith("setgroups")
+        ) {
+          const prefixMatch = rawText.match(/^\.?\/?setgroups\s*/i);
+          const prefixLen = prefixMatch ? prefixMatch[0].length : 10;
+          const rawArg = rawText.substring(prefixLen).trim();
+
+          let batchId = null;
+          let actionOrIndices = null;
+
+          const parts = rawArg ? rawArg.split(/\s+/) : [];
+          if (parts[0] && parts[0].startsWith("batch_")) {
+            batchId = parts[0];
+            actionOrIndices = parts.slice(1).join(" ").trim();
+          } else {
+            const activeBatches = db.getAllBatches("faol");
+            const targetBatch = activeBatches[0] || db.getAllBatches()[0];
+            if (targetBatch) {
+              batchId = targetBatch.id;
+              actionOrIndices = rawArg;
+            }
+          }
+
+          const batch = batchId ? db.getBatchById(batchId) : null;
+          if (!batch) {
+            await this.client.sendMessage("me", {
+              message: `⚠️ Faol to'plam topilmadi. Avval \`.batches\` orqali to'plamlarni tekshiring.`,
+            });
+          } else {
+            let groups = db.getTargetGroups();
+            if ((!groups || groups.length === 0) && this.isConnected && this.client) {
+              try {
+                groups = await this.getJoinedGroups();
+                if (groups && groups.length > 0) db.setTargetGroups(groups);
+              } catch (e) {}
+            }
+
+            if (!actionOrIndices || actionOrIndices.toLowerCase() === "all" || actionOrIndices.toLowerCase() === "hammasi") {
+              db.selectAllGroupsForBatch(batchId, groups.map((g) => g.id));
+              await this.client.sendMessage("me", {
+                message: `✅ "${batch.title}" to'plamiga dastlabki ${config.MAX_BATCH_GROUPS} ta tanlangan guruh biriktirildi!`,
+              });
+            } else if (actionOrIndices.toLowerCase() === "clear" || actionOrIndices.toLowerCase() === "tozala") {
+              db.clearBatchTargetGroups(batchId);
+              await this.client.sendMessage("me", {
+                message: `◻️ "${batch.title}" to'plamidan barcha guruhlar olib tashlandi (Tozalandi).`,
+              });
+            } else {
+              // 1,2,5 formatida tartib raqamlar
+              const rawIndices = actionOrIndices.split(/[,+\s]+/).map((n) => parseInt(n.trim(), 10) - 1).filter((n) => !isNaN(n) && n >= 0 && n < groups.length);
+              const selectedGroupIds = rawIndices.slice(0, config.MAX_BATCH_GROUPS).map((idx) => groups[idx].id);
+              db.setBatchTargetGroups(batchId, selectedGroupIds);
+              await this.client.sendMessage("me", {
+                message: `✅ "${batch.title}" to'plamiga ${selectedGroupIds.length} ta tanlangan guruh biriktirildi (Maksimal ${config.MAX_BATCH_GROUPS} ta)!`,
+              });
+            }
+          }
+        } else if (
           lowerText === ".groups" ||
           lowerText === "/groups" ||
           lowerText === "groups" ||
-          lowerText === "guruhlar"
+          lowerText === "guruhlar" ||
+          lowerText === ".groups refresh" ||
+          lowerText === ".refresh"
         ) {
           try {
             const groups = await this.getJoinedGroups();
+            if (groups && groups.length > 0) {
+              db.setTargetGroups(
+                groups.map((g) => ({
+                  id: g.id,
+                  title: g.title,
+                  username: g.username || null,
+                })),
+              );
+            }
             let textRes = `👥 **LOGISTIKA GURUHLARINGIZ RO'YXATI (${groups.length} ta):**\n\n`;
             groups.slice(0, 50).forEach((g, i) => {
               textRes += `${i + 1}. ${g.title}\n`;
             });
+            if (groups.length > 50) {
+              textRes += `\n...va yana ${groups.length - 50} ta guruh.`;
+            }
             await this.client.sendMessage("me", { message: textRes });
           } catch (e) {
             await this.client.sendMessage("me", {
@@ -222,17 +326,18 @@ class UserbotService {
               statsText += `📦 **${idx + 1}. To'plam: "${b.title}"**\n`;
               statsText += `📌 Holati: ${b.status === "faol" ? "🟢 FAOL" : "🔴 NOFAOL"}\n`;
               statsText += `🔄 Sikllar: ${b.completed_cycles || 0}/${config.MAX_SENT_COUNT} ta\n`;
-              statsText += `👥 Yuborilgan guruhlar: ${groupIds.length} ta\n`;
+              statsText += `👥 Tanlangan guruhlar: ${(b.target_group_ids || []).length}/${config.MAX_BATCH_GROUPS} ta\n`;
+              statsText += `📊 Yuborilgan guruhlar: ${groupIds.length} ta\n`;
 
               if (groupIds.length > 0) {
-                statsText += `📋 Guruhlar bo'yicha hisobot:\n`;
+                statsText += `📋 Qaysi guruhga necha marta yuborilgani:\n`;
                 groupIds.slice(0, 30).forEach((gId, gIdx) => {
                   const item = groupStats[gId];
                   let linkPart = "";
                   if (item.last_message_link) {
                     linkPart = ` | 👉 ${item.last_message_link}`;
                   }
-                  statsText += `  ${gIdx + 1}) **${item.title}** — **${item.count} marta**${linkPart}\n`;
+                  statsText += `  ${gIdx + 1}) **${item.title}** — **${item.count}/${config.MAX_SENT_COUNT} marta**${linkPart}\n`;
                 });
                 if (groupIds.length > 30) {
                   statsText += `  ...va yana ${groupIds.length - 30} ta guruh\n`;
@@ -256,7 +361,7 @@ class UserbotService {
             for (const c of faol) {
               const preview = formatter.formatSingleCargo(c, 1);
               await this.client.sendMessage("me", {
-                message: `🆔 \`${c.id}\`\n🔄 Bajarilgan Sikllar: **${c.sent_cycles || 0}/10**\n\n${preview}`,
+                message: `🆔 \`${c.id}\`\n🔄 Bajarilgan Sikllar: **${c.sent_cycles || 0}/${config.MAX_SENT_COUNT}**\n\n${preview}`,
               });
             }
           }

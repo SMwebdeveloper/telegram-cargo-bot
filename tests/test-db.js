@@ -1,4 +1,5 @@
 const db = require('../src/database/db');
+const config = require('../src/config');
 
 console.log('🧪 Testing Database Operations:\n');
 
@@ -17,8 +18,8 @@ console.log('   Contact:', newCargo.contact);
 const batch = db.createBatch('Test Batch', [newCargo.id]);
 console.log('2. Created Batch ID:', batch.id, '| Status:', batch.status);
 
-// 3. Record 10 completed cycles for batch
-for (let cycle = 1; cycle <= 10; cycle++) {
+// 3. Record completed cycles for batch
+for (let cycle = 1; cycle <= config.MAX_SENT_COUNT; cycle++) {
   // Simulate dispatch to a group
   db.recordBatchGroupDispatch(batch.id, { id: `-100123${cycle}`, title: `Group ${cycle}` }, cycle, cycle);
   db.recordGroupDispatch(newCargo.id, { id: `-100123${cycle}`, title: `Group ${cycle}` }, cycle);
@@ -28,10 +29,10 @@ for (let cycle = 1; cycle <= 10; cycle++) {
 }
 
 const updatedBatch = db.getBatchById(batch.id);
-console.log(`3. Batch Sent Cycles: ${updatedBatch.completed_cycles}/10. Batch Status: ${updatedBatch.status}`);
+console.log(`3. Batch Sent Cycles: ${updatedBatch.completed_cycles}/${config.MAX_SENT_COUNT}. Batch Status: ${updatedBatch.status}`);
 
-if (updatedBatch.status === 'nofaol' && updatedBatch.completed_cycles === 10) {
-  console.log('✅ Batch Auto-deactivation after 10 completed cycles verified successfully!');
+if (updatedBatch.status === 'nofaol' && updatedBatch.completed_cycles === config.MAX_SENT_COUNT) {
+  console.log(`✅ Batch Auto-deactivation after ${config.MAX_SENT_COUNT} completed cycles verified successfully!`);
 } else {
   console.error('❌ Batch Auto-deactivation failed!');
 }

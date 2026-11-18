@@ -51,66 +51,99 @@ class DistributionScheduler {
 
   /**
    * Tanlangan guruh uchun navbatdagi matn variantini hisoblaydi.
-   * Qoida: Bitta guruhga hech qachon ketma-ket bir xil matn yuborilmasligi kerak.
+   * Qoida: Guruhga har doim namunalar yangilanib, 1 dan 10 gacha ketma-ket almashib boradi (hech qachon bir xil namuna ketma-ket yuborilmaydi).
    */
   getNextVariant(batchId, groupId, cycleIndex, groupIndex) {
     const lastVariant = db.getBatchLastVariantForGroup(batchId, groupId);
 
-    // Birlamchi formula: sikl va guruh indeksi bo'yicha rotatsiya (1 dan 10 gacha)
-    let candidate = ((((cycleIndex - 1 + groupIndex) % 10) + 10) % 10) + 1;
-
-    // Agar nomzod variant oldingi yuborilgan variant bilan bir xil bo'lsa, keyingisiga suramiz
-    if (candidate === lastVariant) {
-      candidate = (candidate % 10) + 1;
+    if (lastVariant) {
+      // Guruhga avval yuborilgan namunadan keyingi yangi namuna (1 -> 2 -> 3 ... -> 10 -> 1)
+      return (lastVariant % 10) + 1;
     }
 
-    return candidate;
+    // Boshlang'ich jo'natishda har bir guruh har xil namunadan boshlaydi
+    return ((((groupIndex) % 10) + 10) % 10) + 1;
   }
 
   /**
    * Statistika xabarini HTML formatida xavfsiz shakllantiradi
-   * Guruhlar nomi, necha marta yuborilgani va oxirgi yuborilgan xabarga havola / yo'nalish
+   * Tarqatilayotgan to'plam matni, qaysi guruhlarga yuborilishi kerakligi va necha marta yuborilganligini ko'rsatadi
    */
-  buildStatisticsText(batch, cycleNumber, groupIndex, totalGroups, currentStatus) {
+  buildStatisticsText(batch, cycleNumber, currentGroupIndex, targetGroups = [], currentStatus = "", currentMessageText = "") {
     const freshBatch = db.getBatchById(batch.id) || batch;
     const completedCycles = freshBatch.completed_cycles || 0;
     const groupStats = freshBatch.group_stats || {};
-    const groupIds = Object.keys(groupStats);
+    const totalGroups = targetGroups.length;
 
-    let text = `📊 <b>E'LONLAR TO'PLAMI STATISTIKASI</b>\n\n`;
-    text += `📦 <b>To'plam:</b> ${escapeHtml(freshBatch.title)}\n`;
+    let text = `🚚 <b>TARQATILAYOTGAN TO'PLAM: ${escapeHtml(freshBatch.title)}</b>\n\n`;
     text += `📌 <b>Holati:</b> ${freshBatch.status === "faol" ? "🟢 FAOL" : "🔴 NOFAOL"}\n`;
     text += `🔄 <b>Bajarilgan sikllar:</b> ${completedCycles}/${config.MAX_SENT_COUNT} ta\n`;
-    text += `👥 <b>Guruhlar soni:</b> ${totalGroups} ta\n`;
-    text += `⚡️ <b>Hozirgi jarayon:</b> [${groupIndex + 1}/${totalGroups}] ${escapeHtml(currentStatus)}\n\n`;
+    text += `👥 <b>Tanlangan guruhlar:</b> ${totalGroups} ta (Faqat 15 tanlangan guruh)\n`;
+    const progressIndex = currentGroupIndex >= 0 ? currentGroupIndex + 1 : 0;
+    text += `⚡️ <b>Hozirgi jarayon:</b> [${progressIndex}/${totalGroups}] ${escapeHtml(currentStatus)}\n\n`;
 
-    text += `📋 <b>Guruhlar bo'yicha hisobot va xabarlarga havolalar:</b>\n`;
-    if (groupIds.length === 0) {
-      text += `<i>Hozircha guruhlarga yuborilmadi</i>\n`;
+    text += `📋 <b>GURUHLAR BO'YICHA STATISTIKA (QAYSI GURUHGA NECHA MARTA YUBORILGANI):</b>\n`;
+    if (totalGroups === 0) {
+      text += `<i>⚠️ Ushbu to'plamga hali birorta ham guruh biriktirilmagan!</i>\n`;
     } else {
       let lines = [];
-      groupIds.forEach((gId, idx) => {
-        const item = groupStats[gId];
+      targetGroups.forEach((group, idx) => {
+        const item = groupStats[group.id] || { count: 0 };
+        const sentCount = item.count || 0;
+
+        let icon = "⏳";
+        let statusNote = "";
+        if (currentGroupIndex >= 0) {
+          if (idx < currentGroupIndex) {
+            icon = "✅";
+          } else if (idx === currentGroupIndex) {
+            icon = "🔄";
+            statusNote = " <i>(Hozirgi)</i>";
+          } else {
+            icon = "⏳";
+            statusNote = " <i>(Navbatda)</i>";
+          }
+        }
+
         let linkPart = "";
         if (item.last_message_link) {
           linkPart = ` | <a href="${item.last_message_link}">👉 Oxirgi xabar</a>`;
         } else if (item.last_message_id) {
-          linkPart = ` | <i>(Xabar #${item.last_message_id})</i>`;
+          linkPart = ` | <i>(ID: #${item.last_message_id})</i>`;
         }
 
         lines.push(
-          `${idx + 1}. <b>${escapeHtml(item.title || "Guruh")}</b> — <b>${item.count} marta</b>${linkPart}`,
+          `${idx + 1}. ${icon} <b>${escapeHtml(group.title || "Guruh")}</b> — <b>${sentCount}/${config.MAX_SENT_COUNT} marta</b>${statusNote}${linkPart}`,
         );
       });
 
       // Telegram 4096 belgilik chegarasiga sig'dirish
-      let rendered = lines.join("\n");
-      if (rendered.length > 3300) {
-        rendered =
-          lines.slice(-30).join("\n") +
-          `\n<i>...va yana ${lines.length - 30} ta guruh</i>`;
+      if (lines.length > 25) {
+        // Agar guruhlar ko'p bo'lsa, joriy guruh atrofidagilarni ko'rsatamiz
+        const start = Math.max(0, currentGroupIndex - 10);
+        const end = Math.min(lines.length, start + 25);
+        let visibleLines = lines.slice(start, end);
+        let headerNote = start > 0 ? `<i>...avvalgi ${start} ta guruh</i>\n` : "";
+        let footerNote = end < lines.length ? `\n<i>...yana ${lines.length - end} ta guruh</i>` : "";
+        text += headerNote + visibleLines.join("\n") + footerNote + "\n";
+      } else {
+        text += lines.join("\n") + "\n";
       }
-      text += rendered;
+    }
+
+    if (currentMessageText) {
+      text += `\n━━━━━━━━━━━━━━━━━━━━\n`;
+      text += `📦 <b>TARQATILAYOTGAN TO'PLAM MATNI:</b>\n`;
+      let previewSafe = escapeHtml(currentMessageText.trim());
+      if (previewSafe.length > 1000) {
+        previewSafe = previewSafe.substring(0, 990) + "...";
+      }
+      text += `<code>${previewSafe}</code>`;
+    }
+
+    // Umumiy matn 4000 belgidan oshmasligini ta'minlash
+    if (text.length > 3900) {
+      text = text.substring(0, 3850) + "\n<i>...(matn qisqartirildi)</i>";
     }
 
     return text;
@@ -119,13 +152,14 @@ class DistributionScheduler {
   /**
    * Jonli statistika xabarini tahrirlaydi (editMessage). Har safar yangi xabar yuborilmaydi!
    */
-  async updateLiveStatsMessage(batch, cycleNumber, groupIndex, totalGroups, currentStatus) {
+  async updateLiveStatsMessage(batch, cycleNumber, currentGroupIndex, targetGroups = [], currentStatus = "", currentMessageText = "") {
     const text = this.buildStatisticsText(
       batch,
       cycleNumber,
-      groupIndex,
-      totalGroups,
+      currentGroupIndex,
+      targetGroups,
       currentStatus,
+      currentMessageText,
     );
 
     // 1. Telegraf Admin Bot (Owner) chatidagi xabarni yangilash
@@ -199,7 +233,7 @@ class DistributionScheduler {
     if (this.isRunning) return false;
     this.isRunning = true;
     db.updateBotSettings({ is_running: true });
-    this.log(`🚀 Tarqatish dvigateli ishga tushdi! (Jami 10 ta sikl rejasi)`);
+    this.log(`🚀 Tarqatish dvigateli ishga tushdi! (Jami ${config.MAX_SENT_COUNT} ta sikl rejasi)`);
     this.runLoop();
     return true;
   }
@@ -261,11 +295,12 @@ class DistributionScheduler {
             const newBatch = db.createBatch(
               "Asosiy to'plam",
               activeCargoes.slice(0, config.MAX_BATCH_CARGOES).map((c) => c.id),
+              defaultGroups.slice(0, config.MAX_BATCH_GROUPS).map((g) => g.id), // yangi to'plamga faqat 15 ta guruhni biriktirish
             );
             allBatches.push(newBatch);
           } else {
             this.log(
-              "⚠️ Faol to'plamlar topilmadi (Barcha to'plamlar 10 ta siklni tugatgan yoki nofaol). 5 daqiqadan so'ng qayta tekshiriladi.",
+              `⚠️ Faol to'plamlar topilmadi (Barcha to'plamlar ${config.MAX_SENT_COUNT} ta siklni tugatgan yoki nofaol). 5 daqiqadan so'ng qayta tekshiriladi.`,
             );
             await this.sleep(5 * 60 * 1000);
             continue;
@@ -276,7 +311,7 @@ class DistributionScheduler {
         for (const batch of allBatches) {
           if (!this.isRunning) break;
 
-          // Agar to'plam allaqachon 10 ta siklni bajargan bo'lsa, uni nofaolga o'tkazamiz
+          // Agar to'plam allaqachon MAX_SENT_COUNT ta siklni bajargan bo'lsa, uni nofaolga o'tkazamiz
           if ((batch.completed_cycles || 0) >= config.MAX_SENT_COUNT) {
             db.updateBatchStatus(batch.id, "nofaol");
             continue;
@@ -284,32 +319,79 @@ class DistributionScheduler {
 
           const { cargoes } = db.getBatchWithCargoes(batch.id) || {};
           const cargoList = cargoes || [];
+          const previewMessage =
+            cargoList.length > 0
+              ? formatter.formatBatchMessage(cargoList, 1)
+              : formatter.formatSingleCargo(null, 1);
 
-          // Guruhlarni aralashtirish (anti-spam)
-          const targetGroups = this.shuffleArray(defaultGroups);
+          // To'plam uchun biriktirilgan maqsadli guruhlarni tekshirish
+          const targetGroupIds = (batch.target_group_ids || []).map(String);
+          if (targetGroupIds.length === 0) {
+            this.log(
+              `⚠️ "${batch.title}" to'plami uchun guruhlar tanlanmagan! Iltimos, to'plam sozlamalaridan guruhlarni tanlang.`,
+            );
+            await this.updateLiveStatsMessage(
+              batch,
+              (batch.completed_cycles || 0) + 1,
+              -1,
+              [],
+              `⚠️ Ushbu to'plam uchun birorta ham guruh tanlanmagan! To'plam sozlamalaridan guruhlarni belgilang.`,
+              previewMessage,
+            );
+            continue;
+          }
+
+          const batchGroups = defaultGroups
+            .filter((g) => targetGroupIds.includes(String(g.id)))
+            .slice(0, config.MAX_BATCH_GROUPS); // Faqat 15 tanlangan guruhga cheklash
+
+          if (batchGroups.length === 0) {
+            this.log(
+              `⚠️ "${batch.title}" to'plamiga tanlangan guruhlar profilingizda topilmadi.`,
+            );
+            await this.updateLiveStatsMessage(
+              batch,
+              (batch.completed_cycles || 0) + 1,
+              -1,
+              [],
+              `⚠️ Tanlangan guruhlar hisobingizda topilmadi.`,
+              previewMessage,
+            );
+            continue;
+          }
+
+          // Tanlangan guruhlarni aralashtirish (anti-spam)
+          const targetGroups = this.shuffleArray(batchGroups);
           const totalGroups = targetGroups.length;
           const currentCycle = (batch.completed_cycles || 0) + 1;
 
           this.log(
-            `📦 "${batch.title}" to'plami [Sikl #${currentCycle}/${config.MAX_SENT_COUNT}] boshlandi (${totalGroups} ta haqiqiy guruh)...`,
+            `📦 "${batch.title}" to'plami [Sikl #${currentCycle}/${config.MAX_SENT_COUNT}] boshlandi (${totalGroups} ta tanlangan guruh)...`,
           );
 
           // Statistika xabarini boshlang'ich holatda yangilash
           await this.updateLiveStatsMessage(
             batch,
             currentCycle,
-            0,
-            totalGroups,
+            -1,
+            targetGroups,
             `Sikl #${currentCycle} boshlanmoqda...`,
+            previewMessage,
           );
 
-          // Guruhlar bo'ylab navbat bilan yuborish
+          // Tanlangan guruhlar bo'ylab navbat bilan yuborish
           for (let i = 0; i < targetGroups.length; i++) {
             if (!this.isRunning) break;
 
             const group = targetGroups[i];
 
-            // Matn varianti (1 dan 10 gacha): ketma-ket takrorlanmaydi
+            // HAR BIR GURUHGA YUBORISHDAN OLDIN BAZADAN ENG YANGI E'LONLAR MA'LUMOTLARINI OLISH!
+            const freshBatchWithCargoes = db.getBatchWithCargoes(batch.id) || {};
+            const activeCargoList = (freshBatchWithCargoes.cargoes || []).filter(
+              (c) => c && c.status === "faol",
+            );
+
+            // Matn varianti (1 dan 10 gacha): Namunalar doimiy yangilanib, 1 dan 10 gacha ketma-ket almashadi
             const variantNumber = this.getNextVariant(
               batch.id,
               group.id,
@@ -317,11 +399,11 @@ class DistributionScheduler {
               i,
             );
 
-            // Xabar matnini tayyorlash
+            // Xabar matnini tayyorlash (Doim 10 ta namunadan biriga moslab yangi ma'lumot bilan shakllantirish)
             let groupMessage = "";
-            if (cargoList.length > 0) {
+            if (activeCargoList.length > 0) {
               groupMessage = formatter.formatBatchMessage(
-                cargoList,
+                activeCargoList,
                 variantNumber,
               );
             } else {
@@ -351,7 +433,7 @@ class DistributionScheduler {
                 `[Sikl #${currentCycle} | ${i + 1}/${totalGroups}] ✅ Variant #${variantNumber} yuborildi: "${group.title}"`,
               );
 
-              // 1-Yangi funksiya: To'plam statistikasi va oxirgi xabar havolasini bazaga yozish
+              // To'plam statistikasi va oxirgi xabar havolasini bazaga yozish
               db.recordBatchGroupDispatch(
                 batch.id,
                 group,
@@ -380,41 +462,54 @@ class DistributionScheduler {
               batch,
               currentCycle,
               i,
-              totalGroups,
+              targetGroups,
               `"${group.title}"ga yuborildi (Variant #${variantNumber})`,
+              groupMessage,
             );
 
             // VAQT QOIDALARI:
             if (i < totalGroups - 1 && this.isRunning) {
-              // Har 20 ta guruhdan so'ng 5 daqiqa tanaffus
+              // Har 5 ta guruhdan so'ng 3-4 daqiqa dam olish
               if ((i + 1) % config.BATCH_PAUSE_GROUPS_COUNT === 0) {
-                const totalPauseMs = config.BATCH_PAUSE_MS;
-                this.log(`☕️ ${i + 1} ta guruhga yuborildi. 5 daqiqa tanaffus olinmoqda...`);
+                const minPause = config.BATCH_PAUSE_MIN_MS || 180000;
+                const maxPause = config.BATCH_PAUSE_MAX_MS || 240000;
+                const totalPauseMs =
+                  Math.floor(Math.random() * (maxPause - minPause + 1)) + minPause;
+                const pauseMinStr = (totalPauseMs / 60000).toFixed(1);
 
-                // 5 daqiqalik tanaffusda taymerni jonli yangilab turish
+                this.log(`☕️ ${i + 1} ta guruhga yuborildi. 3-4 daqiqa dam olinmoqda (${pauseMinStr} daqiqa)...`);
+
+                // 3-4 daqiqalik dam olishda taymerni jonli yangilab turish
                 let pausePassedMs = 0;
                 while (pausePassedMs < totalPauseMs && this.isRunning) {
-                  const remainingMin = Math.ceil((totalPauseMs - pausePassedMs) / (60 * 1000));
+                  const remainingSec = Math.max(0, Math.ceil((totalPauseMs - pausePassedMs) / 1000));
+                  const remMin = Math.floor(remainingSec / 60);
+                  const remSec = remainingSec % 60;
+                  const timeText = remMin > 0 ? `${remMin} daq ${remSec} sek` : `${remSec} sek`;
+
                   await this.updateLiveStatsMessage(
                     batch,
                     currentCycle,
                     i,
-                    totalGroups,
-                    `☕️ 20 ta guruh yakunlandi. 5 daqiqa tanaffus: qolgan vaqt ${remainingMin} daqiqa...`,
+                    targetGroups,
+                    `☕️ ${i + 1} ta guruh yakunlandi. 3-4 daqiqa dam olish: qolgan vaqt ${timeText}...`,
+                    groupMessage,
                   );
-                  const waitChunk = Math.min(60000, totalPauseMs - pausePassedMs);
+                  const waitChunk = Math.min(10000, totalPauseMs - pausePassedMs);
                   await this.sleep(waitChunk);
                   pausePassedMs += waitChunk;
                 }
-                this.log(`▶️ Tanaffus yakunlandi, sikl davom etmoqda.`);
+                this.log(`▶️ Dam olish yakunlandi, navbatdagi guruhga jo'natish davom etmoqda.`);
               } else {
-                // Har bir guruhdan so'ng aniq 50 soniya kutish
+                // Har bir guruhdan so'ng belgilangan kutish
+                const waitSec = Math.round(config.GROUP_DELAY_MS / 1000);
                 await this.updateLiveStatsMessage(
                   batch,
                   currentCycle,
                   i,
-                  totalGroups,
-                  `"${group.title}"ga yuborildi. Keyingi guruhgacha 50s kutilmoqda...`,
+                  targetGroups,
+                  `"${group.title}"ga yuborildi. Keyingi guruhgacha ${waitSec}s kutilmoqda...`,
+                  groupMessage,
                 );
                 await this.sleep(config.GROUP_DELAY_MS);
               }
@@ -423,7 +518,7 @@ class DistributionScheduler {
 
           if (!this.isRunning) break;
 
-          // SIKL TUGADI: Barcha guruhlarga bitta e'lonlar to'plami to'liq yuborildi!
+          // SIKL TUGADI: Belgilangan barcha guruhlarga ushbu to'plam to'liq yuborildi!
           db.incrementBatchCompletedCycle(batch.id);
           const updatedBatch = db.getBatchById(batch.id);
 
@@ -433,14 +528,15 @@ class DistributionScheduler {
 
           if (updatedBatch.status === "nofaol") {
             this.log(
-              `🛑 "${batch.title}" to'plami 10 ta siklni to'liq yakunladi! Holati "NOFAOL"ga o'tkazildi.`,
+              `🛑 "${batch.title}" to'plami ${config.MAX_SENT_COUNT} ta siklni to'liq yakunladi! Holati "NOFAOL"ga o'tkazildi.`,
             );
             await this.updateLiveStatsMessage(
               updatedBatch,
               currentCycle,
               totalGroups - 1,
-              totalGroups,
-              `🎉 10 ta sikl to'liq yakunlandi! To'plam holati NOFAOLga o'tkazildi.`,
+              targetGroups,
+              `🎉 ${config.MAX_SENT_COUNT} ta sikl to'liq yakunlandi! To'plam holati NOFAOLga o'tkazildi.`,
+              previewMessage,
             );
           } else {
             // Sikl tugagach, keyingi sikl boshlanishidan oldin 20 daqiqa kutiladi!
@@ -455,8 +551,9 @@ class DistributionScheduler {
                 updatedBatch,
                 currentCycle,
                 totalGroups - 1,
-                totalGroups,
+                targetGroups,
                 `😴 Sikl #${currentCycle} tugadi. Keyingi #${currentCycle + 1}-siklgacha: ${remainingMin} daqiqa qoldi...`,
+                previewMessage,
               );
               const waitChunk = Math.min(60000, totalCycleDelayMs - cyclePassedMs);
               await this.sleep(waitChunk);

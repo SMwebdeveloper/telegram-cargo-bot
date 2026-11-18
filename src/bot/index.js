@@ -13,7 +13,19 @@ if (!config.BOT_TOKEN) {
 }
 
 // Build Telegraf options for Proxy & Custom API Root
+const fs = require("fs");
+const path = require("path");
 const telegrafOptions = {};
+
+function appendDebugLog(msg) {
+  try {
+    fs.appendFileSync(
+      path.join(__dirname, "..", "data", "bot_debug.log"),
+      `[${new Date().toISOString()}] ${msg}\n`,
+      "utf8",
+    );
+  } catch (e) {}
+}
 
 if (config.HTTPS_PROXY) {
   try {
@@ -67,9 +79,20 @@ bot.use(async (ctx, next) => {
 
 // Owner Middleware check
 bot.use(async (ctx, next) => {
+  const userId = ctx.from?.id;
+  const cbData = ctx.callbackQuery?.data;
+  if (cbData) {
+    console.log(`[Bot Callback] User: ${userId}, Data: ${cbData}`);
+  }
+
   if (config.OWNER_ID && ctx.from && ctx.from.id !== config.OWNER_ID) {
+    console.warn(`[Bot Access Denied] User ID: ${ctx.from.id} != OWNER_ID: ${config.OWNER_ID}`);
+    if (ctx.callbackQuery) {
+      await ctx.answerCbQuery(`⛔️ Kechirasiz, siz bot egasi emassiz (Sizning ID: ${ctx.from.id}).`, { show_alert: true }).catch(() => {});
+    }
     return ctx.reply(
-      `⛔️ Kechirasiz, ushbu botdan faqat uning egasi foydalanishi mumkin.`,
+      `⛔️ Kechirasiz, ushbu botdan faqat uning egasi foydalanishi mumkin.\nSizning Telegram ID: <code>${ctx.from.id}</code>`,
+      { parse_mode: "HTML" },
     );
   }
   return next();
@@ -523,9 +546,20 @@ const createBatchWizard = new Scenes.WizardScene(
   },
   async (ctx) => {
     const title = toCyrillic(ctx.message.text.trim());
-    const newBatch = db.createBatch(title, []);
+    let defaultGroupIds = [];
+    try {
+      if (userbot.isConnected && userbot.client) {
+        const groups = await userbot.getJoinedGroups();
+        defaultGroupIds = groups.map((g) => g.id);
+      }
+    } catch (e) {}
+    if (defaultGroupIds.length === 0) {
+      defaultGroupIds = db.getTargetGroups().map((g) => g.id);
+    }
+    const safeGroups = defaultGroupIds.slice(0, config.MAX_BATCH_GROUPS);
+    const newBatch = db.createBatch(title, [], safeGroups);
     await ctx.reply(
-      `✅ To'plam muvaffaqiyatli yaratildi!\nNomi: ${newBatch.title}\nID: ${newBatch.id}\n\nEndi "📦 To'plamlar" menyusidan unga e'lonlarni qo'shishingiz va tarqatiladigan guruhlarni belgilashingiz mumkin.`,
+      `✅ To'plam muvaffaqiyatli yaratildi!\nNomi: ${newBatch.title}\nID: ${newBatch.id}\nTanlangan guruhlar: ${newBatch.target_group_ids.length} ta (Faqat 15 tanlangan guruh)\n\nEndi "📦 To'plamlar" menyusidan unga e'lonlarni qo'shishingiz va tanlangan 15 ta guruhni sozlashingiz mumkin.`,
       getMainMenuKeyboard(),
     );
     return ctx.scene.leave();
@@ -574,7 +608,7 @@ bot.hears(`▶️ Tarqatishni boshlash`, async (ctx) => {
   const started = scheduler.start();
   if (started) {
     await ctx.reply(
-      `🚀 E'lonlarni tarqatish boshlandi! Har bir to'liq sikl barcha guruhlarga yuborilgach 1 sikl deb hisoblanadi (Max 10 sikl).`,
+      `🚀 E'lonlarni tarqatish boshlandi! Har bir to'liq sikl belgilangan barcha guruhlarga yuborilgach 1 sikl deb hisoblanadi (Max ${config.MAX_SENT_COUNT} sikl).`,
       getMainMenuKeyboard(),
     );
   } else {
@@ -624,19 +658,20 @@ bot.hears(`📊 Statistika`, async (ctx) => {
     text += `📦 <b>${i + 1}. To'plam: "${esc(b.title)}"</b>\n`;
     text += `📌 <b>Holati:</b> ${b.status === "faol" ? "🟢 FAOL" : "🔴 NOFAOL"}\n`;
     text += `🔄 <b>Bajarilgan sikllar:</b> ${completedCycles}/${config.MAX_SENT_COUNT} ta\n`;
-    text += `👥 <b>Yuborilgan guruhlar:</b> ${groupIds.length} ta\n\n`;
+    text += `👥 <b>Tanlangan guruhlar:</b> ${(b.target_group_ids || []).length}/${config.MAX_BATCH_GROUPS} ta\n`;
+    text += `📊 <b>Yuborilgan guruhlar:</b> ${groupIds.length} ta\n\n`;
 
     if (groupIds.length === 0) {
       text += `<i>Bu to'plam hali guruhlarga yuborilmadi</i>\n`;
     } else {
-      text += `📋 <b>Guruhlar bo'yicha hisobot:</b>\n`;
+      text += `📋 <b>Guruhlar bo'yicha statistika (necha marta yuborilgani):</b>\n`;
       groupIds.forEach((gId, gIdx) => {
         const item = groupStats[gId];
         let linkPart = "";
         if (item.last_message_link) {
           linkPart = ` | <a href="${item.last_message_link}">👉 Oxirgi xabar</a>`;
         }
-        text += `  ${gIdx + 1}) <b>${esc(item.title || "Guruh")}</b> — <b>${item.count} marta</b>${linkPart}\n`;
+        text += `  ${gIdx + 1}) <b>${esc(item.title || "Guruh")}</b> — <b>${item.count}/${config.MAX_SENT_COUNT} marta</b>${linkPart}\n`;
       });
     }
   }
@@ -687,7 +722,7 @@ async function showCargoList(ctx, filterStatus = "faol") {
 
   for (const cargo of cargoes) {
     const preview = formatter.formatSingleCargo(cargo, 1);
-    const text = `🆔 **ID:** \`${cargo.id}\`\n📌 **Status:** ${cargo.status.toUpperCase()}\n🔄 **Bajarilgan Sikllar:** ${cargo.sent_cycles || 0}/10 sikl\n\n${preview}`;
+    const text = `🆔 **ID:** \`${cargo.id}\`\n📌 **Status:** ${cargo.status.toUpperCase()}\n🔄 **Bajarilgan Sikllar:** ${cargo.sent_cycles || 0}/${config.MAX_SENT_COUNT} sikl\n\n${preview}`;
 
     const controlButtons = Markup.inlineKeyboard([
       [
@@ -712,7 +747,7 @@ async function showBatchesList(ctx) {
   const batches = db.getAllBatches();
 
   let text = `📦 **E'LONLAR TO'PLAMLARI (BATCHES)**\n\n`;
-  text += `Barcha to'plamlar avtomatik tarzda profilingizdagi barcha logistika guruhlariga navbat bilan tarqatiladi.\n\n`;
+  text += `Har bir to'plam o'ziga biriktirilgan logistika guruhlariga navbat bilan tarqatiladi.\n\n`;
 
   if (batches.length === 0) {
     text += `Hozircha birorta ham to'plam yaratilmagan.`;
@@ -735,8 +770,9 @@ async function showBatchesList(ctx) {
       batchInfo && batchInfo.cargoes ? batchInfo.cargoes.length : 0;
     const completed = b.completed_cycles || 0;
     const statusText = b.status === "faol" ? "🟢 FAOL" : "🔴 NOFAOL";
+    const groupCount = (b.target_group_ids || []).length;
 
-    const batchText = `📦 **${b.title}**\n🆔 \`${b.id}\`\n📌 **Holati:** ${statusText}\n🔄 **Sikllar:** ${completed}/${config.MAX_SENT_COUNT} ta\n📋 Tarkibidagi e'lonlar: **${cargoCount}/${config.MAX_BATCH_CARGOES}** ta`;
+    const batchText = `📦 **${b.title}**\n🆔 \`${b.id}\`\n📌 **Holati:** ${statusText}\n🔄 **Sikllar:** ${completed}/${config.MAX_SENT_COUNT} ta\n👥 **Tanlangan guruhlar:** **${groupCount}/${config.MAX_BATCH_GROUPS}** ta\n📋 Tarkibidagi e'lonlar: **${cargoCount}/${config.MAX_BATCH_CARGOES}** ta`;
 
     const buttons = Markup.inlineKeyboard([
       [
@@ -751,7 +787,13 @@ async function showBatchesList(ctx) {
         Markup.button.callback(`➖ E'lon olib tashlash`, `batch_rem_${b.id}`),
       ],
       [
+        Markup.button.callback(
+          `👥 Guruhlarni tanlash (${groupCount}/${config.MAX_BATCH_GROUPS})`,
+          `bgroups_${b.id}_0`,
+        ),
         Markup.button.callback(`👁 Ko'rish (Preview)`, `batch_view_${b.id}`),
+      ],
+      [
         Markup.button.callback(`🗑 To'plamni o'chirish`, `batch_del_${b.id}`),
       ],
     ]);
@@ -770,6 +812,167 @@ async function showBatchesList(ctx) {
       ],
     ]),
   );
+}
+
+// Helper function to render group selection interface for batch
+async function renderBatchGroupsSelector(ctx, batchId, page = 0, forceRefresh = false) {
+  const batch = db.getBatchById(batchId);
+  if (!batch) {
+    if (ctx.callbackQuery) await ctx.answerCbQuery("To'plam topilmadi.");
+    return;
+  }
+
+  // 1. Mavjud logistika guruhlarini olish (agar forceRefresh bo'lsa yoki bo'sh bo'lsa Telegramdan qayta olinadi)
+  let groups = db.getTargetGroups();
+  if ((forceRefresh || !groups || groups.length === 0) && userbot.isConnected && userbot.client) {
+    try {
+      const fetched = await userbot.getJoinedGroups();
+      if (fetched && fetched.length > 0) {
+        db.setTargetGroups(
+          fetched.map((g) => ({
+            id: g.id,
+            title: g.title,
+            username: g.username || null,
+          })),
+        );
+        groups = db.getTargetGroups();
+      }
+    } catch (e) {
+      console.warn("Guruhlarni Telegramdan yangilashda ogohlantirish:", e.message);
+    }
+  }
+
+  if (!groups || groups.length === 0) {
+    const emptyMsg =
+      `⚠️ Profilingizda hali logistika guruhlari topilmadi.\n` +
+      `Userbot logistika guruhlariga a'zo bo'lgach, ular bu yerda paydo bo'ladi.`;
+    const backBtn = Markup.inlineKeyboard([
+      [Markup.button.callback("🔄 Qayta tekshirish", `ref_bgrp_${batch.id}_0`)],
+      [Markup.button.callback("⬅️ To'plamlarga qaytish", "back_to_batches")],
+    ]);
+    if (ctx.callbackQuery) {
+      await ctx.editMessageText(emptyMsg, backBtn);
+    } else {
+      await ctx.reply(emptyMsg, backBtn);
+    }
+    return;
+  }
+
+  const selectedIds = (batch.target_group_ids || []).map(String);
+  const pageSize = 10;
+  const totalPages = Math.ceil(groups.length / pageSize) || 1;
+  const currentPage = Math.max(0, Math.min(page, totalPages - 1));
+
+  const startIdx = currentPage * pageSize;
+  const pageGroups = groups.slice(startIdx, startIdx + pageSize);
+
+  function esc(s) {
+    return String(s || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
+  // 1 dan boshlab guruhlar ro'yxatini matn ko'rinishida shakllantirish
+  let groupsListText = "";
+  pageGroups.forEach((g, idx) => {
+    const itemNum = startIdx + idx + 1;
+    const isSelected = selectedIds.includes(String(g.id));
+    const icon = isSelected ? "✅" : "◻️";
+    const statusLabel = isSelected ? "<b>[Tanlangan]</b>" : "<i>[Tanlanmagan]</i>";
+    const title = esc(g.title || "Guruh");
+    groupsListText += `${itemNum}. ${icon} <b>${title}</b> — ${statusLabel}\n`;
+  });
+
+  const buttons = [];
+
+  // Har bir guruh uchun tugma (1 dan boshlab raqamlangan va holati ko'rsatilgan)
+  pageGroups.forEach((g, idx) => {
+    const itemNum = startIdx + idx + 1;
+    const isSelected = selectedIds.includes(String(g.id));
+    const icon = isSelected ? "✅" : "◻️";
+    let title = g.title || "Guruh";
+    if (title.length > 28) {
+      title = title.substring(0, 26) + "..";
+    }
+    buttons.push([
+      Markup.button.callback(
+        `${itemNum}. ${icon} ${title}`,
+        `tbgrp_${batch.id}_${g.id}_${currentPage}`,
+      ),
+    ]);
+  });
+
+  // Sahifalash (Orqaga va Oldinga tugmalari har doim mavjud va ishlaydi)
+  const navRow = [];
+  const prevPage = currentPage > 0 ? currentPage - 1 : null;
+  const nextPage = currentPage < totalPages - 1 ? currentPage + 1 : null;
+
+  navRow.push(
+    Markup.button.callback(
+      "◀️ Orqaga",
+      prevPage !== null ? `bgroups_${batch.id}_${prevPage}` : `bgrp_first_${batch.id}`,
+    ),
+  );
+  navRow.push(
+    Markup.button.callback(
+      `📄 ${currentPage + 1}/${totalPages} (${groups.length} ta)`,
+      "noop",
+    ),
+  );
+  navRow.push(
+    Markup.button.callback(
+      "Oldinga ▶️",
+      nextPage !== null ? `bgroups_${batch.id}_${nextPage}` : `bgrp_last_${batch.id}`,
+    ),
+  );
+  buttons.push(navRow);
+
+  // Hammasini tanlash / Tozalash
+  buttons.push([
+    Markup.button.callback(
+      "✅ Dastlabki 15 tasini tanlash",
+      `all_bgrp_${batch.id}_${currentPage}`,
+    ),
+    Markup.button.callback(
+      "◻️ Tozalash",
+      `clr_bgrp_${batch.id}_${currentPage}`,
+    ),
+  ]);
+
+  // Telegramdan yangilash & Orqaga qaytish
+  buttons.push([
+    Markup.button.callback("🔄 Guruhlarni yangilash (Telegramdan)", `ref_bgrp_${batch.id}_${currentPage}`),
+  ]);
+  buttons.push([
+    Markup.button.callback("⬅️ To'plamlarga qaytish", "back_to_batches"),
+  ]);
+
+  const headerText =
+    `👥 <b>TO'PLAMGA GURUHLARNI BIRIKTIRISH</b>\n\n` +
+    `📦 <b>To'plam:</b> "${esc(batch.title)}"\n` +
+    `📊 <b>Tanlangan:</b> <b>${selectedIds.length}</b> / <b>${config.MAX_BATCH_GROUPS}</b> ta guruh (Maksimal ${config.MAX_BATCH_GROUPS} ta)\n` +
+    `📄 <b>Sahifa:</b> <b>${currentPage + 1} / ${totalPages}</b> (Jami mavjud: <b>${groups.length}</b> ta guruh)\n\n` +
+    `📋 <b>Guruhlar ro'yxati (${startIdx + 1}–${startIdx + pageGroups.length} dan ${groups.length}):</b>\n` +
+    groupsListText +
+    `\n<i>💡 Guruh ustiga bosib belgilang yoki olib tashlang:</i>`;
+
+  if (ctx.callbackQuery) {
+    try {
+      await ctx.editMessageText(headerText, {
+        parse_mode: "HTML",
+        ...Markup.inlineKeyboard(buttons),
+      });
+      return;
+    } catch (e) {
+      if (!e.message?.includes("message is not modified")) {
+        console.warn("editMessageText muvaffaqiyatsiz bo'ldi, yangi xabar yuboriladi:", e.message);
+      } else {
+        return;
+      }
+    }
+  }
+  await ctx.replyWithHTML(headerText, Markup.inlineKeyboard(buttons));
 }
 
 // --- Callback Query Handlers ---
@@ -902,7 +1105,7 @@ bot.action(/history_(cargo_\d+_\d+)/, async (ctx) => {
   if (!cargo) return ctx.answerCbQuery(`E'lon topilmadi.`);
 
   await ctx.answerCbQuery();
-  let text = `📊 **E'lon yuborilish tarixi:**\nID: \`${cargo.id}\`\nBajarilgan Sikllar: **${cargo.sent_cycles || 0}/10** sikl\n\n`;
+  let text = `📊 **E'lon yuborilish tarixi:**\nID: \`${cargo.id}\`\nBajarilgan Sikllar: **${cargo.sent_cycles || 0}/${config.MAX_SENT_COUNT}** sikl\n\n`;
 
   if (!cargo.sent_history || cargo.sent_history.length === 0) {
     text += `Hozircha guruhlarga yuborilmadi.`;
@@ -914,6 +1117,80 @@ bot.action(/history_(cargo_\d+_\d+)/, async (ctx) => {
   }
 
   await ctx.replyWithMarkdown(text);
+});
+
+// --- Batch Target Groups Handlers ---
+bot.action("noop", (ctx) => ctx.answerCbQuery());
+
+bot.action("back_to_batches", async (ctx) => {
+  await ctx.answerCbQuery();
+  await showBatchesList(ctx);
+});
+
+bot.action(/bgroups_(batch_\d+_\d+)_(\d+)/, async (ctx) => {
+  const batchId = ctx.match[1];
+  const page = parseInt(ctx.match[2], 10) || 0;
+  await ctx.answerCbQuery();
+  await renderBatchGroupsSelector(ctx, batchId, page);
+});
+
+bot.action(/bgrp_first_(batch_\d+_\d+)/, async (ctx) => {
+  await ctx.answerCbQuery("ℹ️ Siz birinchi sahifadasiz.");
+});
+
+bot.action(/bgrp_last_(batch_\d+_\d+)/, async (ctx) => {
+  await ctx.answerCbQuery("ℹ️ Siz oxirgi sahifadasiz.");
+});
+
+bot.action(/tbgrp_(batch_\d+_\d+)_(.+)_(\d+)/, async (ctx) => {
+  const batchId = ctx.match[1];
+  const groupId = ctx.match[2];
+  const page = parseInt(ctx.match[3], 10) || 0;
+  const res = db.toggleBatchTargetGroup(batchId, groupId);
+  if (res && res.reason === "limit_reached") {
+    await ctx.answerCbQuery(
+      `⚠️ Limit to'ldi (15/15)! Yangi guruh tanlash uchun avval tanlanganlardan birini olib tashlang yoki 'Tozalash'ni bosing.`,
+      { show_alert: true },
+    );
+    return;
+  }
+  if (res && res.action === "added") {
+    await ctx.answerCbQuery(`✅ Guruh tanlandi (${res.count}/${config.MAX_BATCH_GROUPS})`);
+  } else if (res && res.action === "removed") {
+    await ctx.answerCbQuery(`◻️ Olib tashlandi (${res.count}/${config.MAX_BATCH_GROUPS})`);
+  } else {
+    await ctx.answerCbQuery();
+  }
+  await renderBatchGroupsSelector(ctx, batchId, page);
+});
+
+bot.action(/all_bgrp_(batch_\d+_\d+)_(\d+)/, async (ctx) => {
+  const batchId = ctx.match[1];
+  const page = parseInt(ctx.match[2], 10) || 0;
+  let groups = db.getTargetGroups();
+  if ((!groups || groups.length === 0) && userbot.isConnected && userbot.client) {
+    try {
+      groups = await userbot.getJoinedGroups();
+    } catch (e) {}
+  }
+  db.selectAllGroupsForBatch(batchId, (groups || []).map((g) => g.id));
+  await ctx.answerCbQuery(`Dastlabki ${config.MAX_BATCH_GROUPS} ta guruh tanlandi (Maksimal ${config.MAX_BATCH_GROUPS} ta)!`);
+  await renderBatchGroupsSelector(ctx, batchId, page);
+});
+
+bot.action(/clr_bgrp_(batch_\d+_\d+)_(\d+)/, async (ctx) => {
+  const batchId = ctx.match[1];
+  const page = parseInt(ctx.match[2], 10) || 0;
+  db.clearBatchTargetGroups(batchId);
+  await ctx.answerCbQuery("Barcha guruhlar tozalandi!");
+  await renderBatchGroupsSelector(ctx, batchId, page);
+});
+
+bot.action(/ref_bgrp_(batch_\d+_\d+)_(\d+)/, async (ctx) => {
+  const batchId = ctx.match[1];
+  const page = parseInt(ctx.match[2], 10) || 0;
+  await ctx.answerCbQuery("Telegramdan guruhlar yangilanmoqda...");
+  await renderBatchGroupsSelector(ctx, batchId, page, true);
 });
 
 // --- Batch Cargo Add/Remove Handlers ---
@@ -1041,19 +1318,20 @@ bot.action(/batch_stats_(batch_\d+_\d+)/, async (ctx) => {
   let text = `📊 <b>"${esc(batch.title)}" TO'PLAMI STATISTIKASI</b>\n\n`;
   text += `📌 <b>Holati:</b> ${batch.status === "faol" ? "🟢 FAOL" : "🔴 NOFAOL"}\n`;
   text += `🔄 <b>Bajarilgan sikllar:</b> ${batch.completed_cycles || 0}/${config.MAX_SENT_COUNT} ta\n`;
-  text += `👥 <b>Yuborilgan guruhlar:</b> ${groupIds.length} ta\n\n`;
+  text += `👥 <b>Tanlangan guruhlar:</b> ${(batch.target_group_ids || []).length}/${config.MAX_BATCH_GROUPS} ta\n`;
+  text += `📊 <b>Yuborilgan guruhlar:</b> ${groupIds.length} ta\n\n`;
 
   if (groupIds.length === 0) {
     text += `<i>Bu to'plam hali birorta ham guruhga yuborilmagan.</i>`;
   } else {
-    text += `📋 <b>Guruhlar bo'yicha hisobot va oxirgi xabarlar:</b>\n`;
+    text += `📋 <b>Guruhlar bo'yicha statistika (necha marta yuborilgani):</b>\n`;
     groupIds.forEach((gId, idx) => {
       const item = groupStats[gId];
       let linkPart = "";
       if (item.last_message_link) {
         linkPart = ` | <a href="${item.last_message_link}">👉 Oxirgi xabar</a>`;
       }
-      text += `${idx + 1}. <b>${esc(item.title || "Guruh")}</b> — <b>${item.count} marta</b>${linkPart}\n`;
+      text += `${idx + 1}. <b>${esc(item.title || "Guruh")}</b> — <b>${item.count}/${config.MAX_SENT_COUNT} marta</b>${linkPart}\n`;
     });
   }
 
@@ -1078,3 +1356,4 @@ scheduler.setLogCallback((logMsg) => {
 });
 
 module.exports = bot;
+module.exports.renderBatchGroupsSelector = renderBatchGroupsSelector;

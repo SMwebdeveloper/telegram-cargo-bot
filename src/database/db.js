@@ -36,6 +36,7 @@ class Database {
           if (b.completed_cycles === undefined) b.completed_cycles = 0;
           if (!b.sent_history) b.sent_history = [];
           if (!b.group_stats) b.group_stats = {};
+          if (!b.target_group_ids) b.target_group_ids = [];
           if (b.deactivated_at === undefined) b.deactivated_at = null;
         });
 
@@ -221,13 +222,17 @@ class Database {
     return (this.data.batches || []).find((b) => b.id === id);
   }
 
-  createBatch(title, cargoIds = []) {
+  createBatch(title, cargoIds = [], targetGroupIds = []) {
+    const safeGroups = (Array.isArray(targetGroupIds) ? targetGroupIds : [])
+      .slice(0, config.MAX_BATCH_GROUPS)
+      .map(String);
     const newBatch = {
       id: "batch_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
       title: title || `To'plam #${(this.data.batches.length || 0) + 1}`,
       cargo_ids: cargoIds.slice(0, config.MAX_BATCH_CARGOES),
+      target_group_ids: safeGroups, // To'plam yuboriladigan faqat tanlangan (max 15 ta) guruhlar
       status: "faol", // Yangi to'plam doim faol holatda yaratiladi
-      completed_cycles: 0, // Bajarilgan sikllar soni (0 dan 10 gacha)
+      completed_cycles: 0, // Bajarilgan sikllar soni (0 dan 5 gacha)
       sent_history: [], // Har bir guruhga yuborilganlik tarixi
       group_stats: {}, // Har bir guruh bo'yicha hisobot: { [groupId]: { title, count, last_cycle, last_variant, timestamp } }
       created_at: new Date().toISOString(),
@@ -379,6 +384,63 @@ class Database {
       return removed[0];
     }
     return null;
+  }
+
+  // --- Batch Target Groups Management ---
+
+  getBatchTargetGroups(batchId) {
+    const batch = this.getBatchById(batchId);
+    if (!batch) return [];
+    return batch.target_group_ids || [];
+  }
+
+  setBatchTargetGroups(batchId, groupIds) {
+    const batch = this.getBatchById(batchId);
+    if (!batch) return null;
+    batch.target_group_ids = (Array.isArray(groupIds) ? groupIds : [])
+      .slice(0, config.MAX_BATCH_GROUPS)
+      .map(String);
+    this.save();
+    return batch;
+  }
+
+  toggleBatchTargetGroup(batchId, groupId) {
+    const batch = this.getBatchById(batchId);
+    if (!batch) return null;
+    if (!batch.target_group_ids) batch.target_group_ids = [];
+
+    const strGroupId = String(groupId);
+    const idx = batch.target_group_ids.findIndex((id) => String(id) === strGroupId);
+    if (idx !== -1) {
+      batch.target_group_ids.splice(idx, 1);
+      this.save();
+      return { success: true, action: "removed", count: batch.target_group_ids.length };
+    } else {
+      if (batch.target_group_ids.length >= config.MAX_BATCH_GROUPS) {
+        return { success: false, reason: "limit_reached", count: batch.target_group_ids.length };
+      }
+      batch.target_group_ids.push(strGroupId);
+      this.save();
+      return { success: true, action: "added", count: batch.target_group_ids.length };
+    }
+  }
+
+  selectAllGroupsForBatch(batchId, allGroupIds) {
+    const batch = this.getBatchById(batchId);
+    if (!batch) return null;
+    batch.target_group_ids = (allGroupIds || [])
+      .slice(0, config.MAX_BATCH_GROUPS)
+      .map((id) => String(id));
+    this.save();
+    return batch;
+  }
+
+  clearBatchTargetGroups(batchId) {
+    const batch = this.getBatchById(batchId);
+    if (!batch) return null;
+    batch.target_group_ids = [];
+    this.save();
+    return batch;
   }
 
   // --- Target Groups Management ---

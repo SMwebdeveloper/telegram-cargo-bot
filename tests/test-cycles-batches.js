@@ -1,8 +1,9 @@
 const assert = require("assert");
 const db = require("../src/database/db");
 const scheduler = require("../src/services/scheduler");
+const config = require("../src/config");
 
-console.log("🧪 Testing Batch Lifecycle, Group Stats & 10 Cycles:\n");
+console.log(`🧪 Testing Batch Lifecycle, Group Stats & ${config.MAX_SENT_COUNT} Cycles:\n`);
 
 // 1. Yangi to'plam yaratish
 const batch = db.createBatch("Test To'plam", []);
@@ -17,14 +18,14 @@ db.updateBatchStatus(batch.id, "faol");
 assert.strictEqual(db.getBatchById(batch.id).status, "faol", "To'plam yana faolga o'tishi kerak");
 console.log("2. ✅ To'plam holatini o'zgartirish (faol <-> nofaol) tekshirildi!");
 
-// 3. Guruhlarga yuborish statistikasini yozib borish (Yangi funksiya 1)
+// 3. Guruhlarga yuborish statistikasini yozib borish
 const mockGroups = [
   { id: "-100111", title: "Guruh 1 (Almaty Logistika)" },
   { id: "-100222", title: "Guruh 2 (Toshkent Yuk)" },
   { id: "-100333", title: "Guruh 3 (Tranzit)" },
 ];
 
-for (let cycle = 1; cycle <= 10; cycle++) {
+for (let cycle = 1; cycle <= config.MAX_SENT_COUNT; cycle++) {
   mockGroups.forEach((group, gIdx) => {
     const variant = scheduler.getNextVariant(batch.id, group.id, cycle, gIdx);
     db.recordBatchGroupDispatch(batch.id, group, cycle, variant);
@@ -35,19 +36,19 @@ for (let cycle = 1; cycle <= 10; cycle++) {
 
 // 4. Statistikani tekshirish
 const finalBatch = db.getBatchById(batch.id);
-console.log(`3. 10 ta to'liq sikldan keyin:
-   - Completed cycles: ${finalBatch.completed_cycles}/10
+console.log(`3. ${config.MAX_SENT_COUNT} ta to'liq sikldan keyin:
+   - Completed cycles: ${finalBatch.completed_cycles}/${config.MAX_SENT_COUNT}
    - Holati: ${finalBatch.status}`);
 
-assert.strictEqual(finalBatch.completed_cycles, 10, "10 ta sikl bajarilgan bo'lishi kerak");
-assert.strictEqual(finalBatch.status, "nofaol", "10 ta sikldan so'ng to'plam holati 'nofaol'ga o'tishi kerak!");
-console.log("4. ✅ 10 ta sikldan so'ng to'plam avtomatik 'nofaol'ga o'tdi!");
+assert.strictEqual(finalBatch.completed_cycles, config.MAX_SENT_COUNT, `${config.MAX_SENT_COUNT} ta sikl bajarilgan bo'lishi kerak`);
+assert.strictEqual(finalBatch.status, "nofaol", `${config.MAX_SENT_COUNT} ta sikldan so'ng to'plam holati 'nofaol'ga o'tishi kerak!`);
+console.log(`4. ✅ ${config.MAX_SENT_COUNT} ta sikldan so'ng to'plam avtomatik 'nofaol'ga o'tdi!`);
 
 // 5. Har bir guruh bo'yicha yuborilish sonini tekshirish
 mockGroups.forEach((g) => {
   const stat = finalBatch.group_stats[g.id];
   console.log(`   - "${g.title}": ${stat.count} marta yuborildi (Oxirgi sikl: ${stat.last_cycle})`);
-  assert.strictEqual(stat.count, 10, `Har bir guruhga aynan 10 marta yuborilgan bo'lishi kerak`);
+  assert.strictEqual(stat.count, config.MAX_SENT_COUNT, `Har bir guruhga aynan ${config.MAX_SENT_COUNT} marta yuborilgan bo'lishi kerak`);
 });
 console.log("5. ✅ To'plamning har bir guruhga yuborilish soni to'liq qayd etildi!");
 
